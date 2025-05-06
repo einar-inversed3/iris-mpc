@@ -7,12 +7,15 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use eyre::{bail, eyre, Error, Result, WrapErr};
+use eyre::{bail, eyre, Error, OptionExt as _, Result, WrapErr};
+use futures::future::try_join_all;
+use futures::FutureExt as _;
+use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::oneshot::{self};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReadyProbeResponse {
     pub image_name: String,
@@ -497,4 +500,51 @@ pub async fn check_consensus_on_iris_height(config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub async fn try_get_endpoint_all_nodes(config: &Config, endpoint: &str) -> Result<Vec<Response>> {
+    const NODE_COUNT: usize = 3;
+    let full_urls = get_check_addresses(
+        config.node_hostnames.clone(),
+        config.healthcheck_ports.clone(),
+        endpoint,
+    );
+    let nodes = (0..NODE_COUNT)
+        .map(|j| (config.party_id + j) % NODE_COUNT)
+        .map(|i| (i, full_urls[i].clone()));
+
+    let mut handles = Vec::with_capacity(NODE_COUNT);
+    let mut rxs = Vec::with_capacity(NODE_COUNT);
+
+    for (_i, node_url) in nodes {
+        let (tx, rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            loop {
+                if let Ok(resp) = reqwest::get(node_url.as_str()).await {
+                    let _ = tx.send(resp);
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        handles.push(handle);
+        rxs.push(rx);
+    }
+
+    // Wait until timeout
+    let all_handles = try_join_all(handles);
+    let _all_handles_with_timeout = tokio::time::timeout(
+        Duration::from_secs(config.startup_sync_timeout_secs),
+        all_handles,
+    )
+    .await;
+
+    // Fail if any channel has not received a response.
+    try_join_all(rxs)
+        .now_or_never()
+        .ok_or_eyre("sdfdf")?
+        .inspect_err(|err| {
+            tracing::error!("Error occured reading response channels: {}", err);
+        })
+        .wrap_err("Error occured reading response channels")
 }
