@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use eyre::{bail, eyre, Error, OptionExt as _, Result, WrapErr};
+use eyre::{bail, ensure, eyre, Error, OptionExt as _, Result, WrapErr};
 use futures::future::try_join_all;
 use futures::FutureExt as _;
 use itertools::Itertools as _;
@@ -152,52 +152,15 @@ pub async fn start_coordination_server(
 /// Note: The response to this query is expected initially to be `503 Service Unavailable`.
 pub async fn wait_for_others_unready(config: &Config) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be un-ready (syncing on startup)");
-    // Check other nodes and wait until all nodes are ready.
-    let all_readiness_addresses = get_check_addresses(
-        config.node_hostnames.clone(),
-        config.healthcheck_ports.clone(),
-        "ready",
-    );
+    // Check other nodes and wait until all nodes are unready.
+    let connected_but_unready = try_get_endpoint_all_nodes(config, "ready").await?;
 
-    let party_id = config.party_id;
+    let all_unready = connected_but_unready
+        .iter()
+        .all(|resp| resp.status() == StatusCode::SERVICE_UNAVAILABLE);
 
-    let unready_check = tokio::spawn(async move {
-        let next_node = &all_readiness_addresses[(party_id + 1) % 3];
-        let prev_node = &all_readiness_addresses[(party_id + 2) % 3];
-        let mut connected_but_unready = [false, false];
+    ensure!(all_unready, "One or more nodes were not unready.");
 
-        loop {
-            for (i, host) in [next_node, prev_node].iter().enumerate() {
-                let res = reqwest::get(host.as_str()).await;
-
-                if res.is_ok() && res.unwrap().status() == StatusCode::SERVICE_UNAVAILABLE {
-                    connected_but_unready[i] = true;
-                    // If all nodes are connected, notify the main thread.
-                    if connected_but_unready.iter().all(|&c| c) {
-                        return;
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    });
-
-    tracing::info!("Waiting for all nodes to be unready...");
-    match tokio::time::timeout(
-        Duration::from_secs(config.startup_sync_timeout_secs),
-        unready_check,
-    )
-    .await
-    {
-        Ok(res) => {
-            res?;
-        }
-        Err(_) => {
-            tracing::error!("Timeout waiting for all nodes to be unready.");
-            return Err(eyre!("Timeout waiting for all nodes to be unready."));
-        }
-    };
     tracing::info!("All nodes are starting up.");
 
     Ok(())
@@ -503,6 +466,8 @@ pub async fn check_consensus_on_iris_height(config: &Config) -> Result<()> {
     Ok(())
 }
 
+const TIME_BETWEEN_RETRIES: std::time::Duration = Duration::from_secs(1);
+
 pub async fn try_get_endpoint_all_nodes(config: &Config, endpoint: &str) -> Result<Vec<Response>> {
     const NODE_COUNT: usize = 3;
     let full_urls = get_check_addresses(
@@ -510,26 +475,28 @@ pub async fn try_get_endpoint_all_nodes(config: &Config, endpoint: &str) -> Resu
         config.healthcheck_ports.clone(),
         endpoint,
     );
-    let nodes = (0..NODE_COUNT)
+    let node_urls = (0..NODE_COUNT)
         .map(|j| (config.party_id + j) % NODE_COUNT)
-        .map(|i| (i, full_urls[i].clone()));
+        .map(|i| (i, full_urls[i].to_owned()))
+        .sorted_by(|a, b| Ord::cmp(&a.0, &b.0))
+        .map(|(_i, full_url)| full_url);
 
     let mut handles = Vec::with_capacity(NODE_COUNT);
     let mut rxs = Vec::with_capacity(NODE_COUNT);
 
-    for (i, node_url) in nodes {
+    for node_url in node_urls {
         let (tx, rx) = oneshot::channel();
         let handle = tokio::spawn(async move {
             loop {
-                if let Ok(resp) = reqwest::get(node_url.as_str()).await {
+                if let Ok(resp) = reqwest::get(&node_url).await {
                     let _ = tx.send(resp);
                     return;
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(TIME_BETWEEN_RETRIES).await;
             }
         });
         handles.push(handle);
-        rxs.push((i, rx));
+        rxs.push(rx);
     }
 
     // Wait until timeout
@@ -540,13 +507,8 @@ pub async fn try_get_endpoint_all_nodes(config: &Config, endpoint: &str) -> Resu
     )
     .await;
 
-    let rxs_sorted: Vec<_> = rxs
-        .into_iter()
-        .sorted_by(|a, b| Ord::cmp(&a.0, &b.0))
-        .map(|(_i, rx)| rx)
-        .collect();
     // Fail if any channel has not received a response.
-    try_join_all(rxs_sorted)
+    try_join_all(rxs)
         .now_or_never()
         .ok_or_eyre("sdfdf")?
         .inspect_err(|err| {
