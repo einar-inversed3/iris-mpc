@@ -293,6 +293,7 @@ pub async fn init_heartbeat_task(
     Ok(())
 }
 
+#[deprecated]
 /// Retrieves synchronization state of other MPC nodes.  This data is
 /// used to ensure that all nodes are in a consistent state prior
 /// to starting MPC operations.
@@ -338,6 +339,7 @@ pub async fn get_others_sync_state(config: &Config, my_state: &SyncState) -> Res
     Ok(SyncResult::new(my_state.clone(), states))
 }
 
+#[deprecated]
 /// Toggle `is_ready_flag` to `true` to signal to other nodes that this node
 /// is ready to execute the main server loop.
 pub fn set_node_ready(is_ready_flag: Arc<AtomicBool>) {
@@ -347,6 +349,7 @@ pub fn set_node_ready(is_ready_flag: Arc<AtomicBool>) {
     is_ready_flag.store(true, Ordering::SeqCst);
 }
 
+#[deprecated]
 /// Awaits until other MPC nodes respond to "ready" queries
 /// indicating readiness to execute the main server loop.
 pub async fn wait_for_others_ready(config: &Config) -> Result<()> {
@@ -400,6 +403,7 @@ pub async fn wait_for_others_ready(config: &Config) -> Result<()> {
     Ok(())
 }
 
+#[deprecated]
 /// Assumption This function assumes that each of the nodes have finished indexing the irises before it is called.
 pub async fn check_consensus_on_iris_height(config: &Config) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Checking consensus on iris height");
