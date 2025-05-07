@@ -10,6 +10,7 @@ use axum::Router;
 use eyre::{bail, eyre, Error, OptionExt as _, Result, WrapErr};
 use futures::future::try_join_all;
 use futures::FutureExt as _;
+use itertools::Itertools as _;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -516,7 +517,7 @@ pub async fn try_get_endpoint_all_nodes(config: &Config, endpoint: &str) -> Resu
     let mut handles = Vec::with_capacity(NODE_COUNT);
     let mut rxs = Vec::with_capacity(NODE_COUNT);
 
-    for (_i, node_url) in nodes {
+    for (i, node_url) in nodes {
         let (tx, rx) = oneshot::channel();
         let handle = tokio::spawn(async move {
             loop {
@@ -528,7 +529,7 @@ pub async fn try_get_endpoint_all_nodes(config: &Config, endpoint: &str) -> Resu
             }
         });
         handles.push(handle);
-        rxs.push(rx);
+        rxs.push((i, rx));
     }
 
     // Wait until timeout
@@ -539,8 +540,13 @@ pub async fn try_get_endpoint_all_nodes(config: &Config, endpoint: &str) -> Resu
     )
     .await;
 
+    let rxs_sorted: Vec<_> = rxs
+        .into_iter()
+        .sorted_by(|a, b| Ord::cmp(&a.0, &b.0))
+        .map(|(_i, rx)| rx)
+        .collect();
     // Fail if any channel has not received a response.
-    try_join_all(rxs)
+    try_join_all(rxs_sorted)
         .now_or_never()
         .ok_or_eyre("sdfdf")?
         .inspect_err(|err| {
