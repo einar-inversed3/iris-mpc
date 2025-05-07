@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use eyre::{bail, ensure, eyre, Error, OptionExt as _, Result, WrapErr};
+use eyre::{ensure, Error, OptionExt as _, Result, WrapErr};
 use futures::future::try_join_all;
 use futures::FutureExt as _;
 use itertools::Itertools as _;
@@ -293,7 +293,6 @@ pub async fn init_heartbeat_task(
     Ok(())
 }
 
-#[deprecated]
 /// Retrieves synchronization state of other MPC nodes.  This data is
 /// used to ensure that all nodes are in a consistent state prior
 /// to starting MPC operations.
