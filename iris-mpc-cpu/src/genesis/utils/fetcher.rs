@@ -5,11 +5,11 @@ use iris_mpc_common::helpers::fetch_index;
 use iris_mpc_store::{DbStoredIris, Store as IrisPgresStore};
 use serde::{Deserialize, Serialize};
 
-/// Fetches height of indexed from store.
+/// Fetches height of indexed irises from disk.
 ///
 /// # Returns
 ///
-/// Index of lastest iris.
+/// Height of stored irises or 1 if file not found on disk.
 ///
 pub async fn fetch_height_of_indexed() -> IrisSerialId {
     fetch_index::fetch_height_of_indexed().await
